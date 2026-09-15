@@ -99,8 +99,8 @@ class AdminDrawer extends StatelessWidget {
           SliverList.list(
             children: [
               _item(
-                ikon: Icons.home_outlined,
-                judul: 'Beranda',
+                ikon: Icons.dashboard_outlined,
+                judul: 'Dashboard',
                 pilih: halaman == HalamanAdmin.beranda,
                 onTap: () => _keBeranda(context),
               ),
@@ -178,9 +178,10 @@ class AdminDrawer extends StatelessWidget {
   }
 }
 
-PreferredSizeWidget appBarAdmin(String judul) {
+PreferredSizeWidget appBarAdmin(String judul, {List<Widget>? actions}) {
   return AppBar(
     title: Text(judul),
+    actions: actions,
     leading: Builder(
       builder: (ctx) => IconButton(
         icon: const Icon(Icons.menu),

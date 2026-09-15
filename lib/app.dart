@@ -59,7 +59,7 @@ class _Gerbang extends StatelessWidget {
           if (halaman == HalamanAdmin.setoran) {
             return const SetoranScreen();
           }
-          return BerandaLayar(nama: state.nama, email: state.email);
+          return const BerandaLayar();
         }
         return Stack(
           children: [

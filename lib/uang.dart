@@ -39,6 +39,30 @@ class Uang {
 
   static String rp(int nominal) => 'Rp ${angka(nominal)}';
 
+  static String qty(num n) {
+    if (n == n.roundToDouble()) return '${n.round()}';
+    return n
+        .toStringAsFixed(4)
+        .replaceFirst(RegExp(r'0+$'), '')
+        .replaceFirst(RegExp(r'\.$'), '')
+        .replaceAll('.', ',');
+  }
+
+  static num qtyTeks(String s) {
+    var t = s.trim().replaceAll(' ', '');
+    if (t.isEmpty) return 0;
+    if (t.contains(',') && t.contains('.')) {
+      if (t.lastIndexOf(',') > t.lastIndexOf('.')) {
+        t = t.replaceAll('.', '').replaceAll(',', '.');
+      } else {
+        t = t.replaceAll(',', '');
+      }
+    } else if (t.contains(',')) {
+      t = t.replaceAll(',', '.');
+    }
+    return num.tryParse(t) ?? 0;
+  }
+
   static String tanggal(DateTime d) {
     final h = d.day.toString().padLeft(2, '0');
     final b = d.month.toString().padLeft(2, '0');

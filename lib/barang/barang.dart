@@ -26,7 +26,7 @@ class Barang {
   final String idGrup;
   final String nama;
   final String kategori;
-  final int stok;
+  final num stok;
   final int hargaBeli;
   final int hargaJual;
   final int minStrat1;
@@ -116,12 +116,17 @@ class Barang {
 
   factory Barang.fromJson(Map<String, dynamic> json) {
     int n(dynamic v) => (v as num?)?.toInt() ?? 0;
+    num q(dynamic v) {
+      if (v is num) return v;
+      return num.tryParse(v?.toString().replaceAll(',', '.') ?? '') ?? 0;
+    }
+
     return Barang(
       id: json['id_barang']?.toString() ?? '',
       idGrup: json['id_grup']?.toString() ?? '',
       nama: json['nama_barang']?.toString() ?? '',
       kategori: json['kategori']?.toString() ?? '',
-      stok: n(json['stok']),
+      stok: q(json['stok']),
       hargaBeli: n(json['harga_beli']),
       hargaJual: n(json['harga_jual']),
       minStrat1: n(json['min_strat_1']),

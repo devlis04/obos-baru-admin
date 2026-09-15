@@ -167,7 +167,7 @@ class _BarangLayarState extends State<BarangLayar> {
                                       Text(
                                         [
                                           b.id,
-                                          'Stok ${Uang.angka(b.stok)}',
+                                          'Stok ${Uang.qty(b.stok)}',
                                           Uang.rp(b.hargaJual),
                                           if (!b.aktif) 'Nonaktif',
                                         ].join(' · '),

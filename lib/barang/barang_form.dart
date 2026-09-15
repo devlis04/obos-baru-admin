@@ -82,6 +82,7 @@ class _BarangPanelState extends State<BarangPanel> {
   }
 
   static final _digit = FilteringTextInputFormatter.digitsOnly;
+  static final _qty = FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'));
 
   static const _pad = EdgeInsets.symmetric(horizontal: 10, vertical: 8);
 
@@ -136,7 +137,7 @@ class _BarangPanelState extends State<BarangPanel> {
     _jual.text = a == null || a.hargaJual == 0 ? '' : '${a.hargaJual}';
     _pengurang.text =
         a == null || a.pengurangStrata == 0 ? '' : '${a.pengurangStrata}';
-    _stok.text = a == null ? '0' : '${a.stok}';
+    _stok.text = a == null ? '0' : Uang.qty(a.stok);
     final mins = [
       a?.minStrat1 ?? 0,
       a?.minStrat2 ?? 0,
@@ -260,7 +261,9 @@ class _BarangPanelState extends State<BarangPanel> {
 
   int _angka(TextEditingController c) => int.tryParse(c.text.trim()) ?? 0;
 
-  Barang _dariForm({int? stok}) {
+  num _qtyAngka() => Uang.qtyTeks(_stok.text);
+
+  Barang _dariForm({num? stok}) {
     return Barang(
       id: _id.text.trim(),
       idGrup: _grup.text.trim(),
@@ -270,7 +273,7 @@ class _BarangPanelState extends State<BarangPanel> {
         rincian: _rincian.text,
       ),
       kategori: _kategori.text.trim(),
-      stok: stok ?? _angka(_stok),
+      stok: stok ?? _qtyAngka(),
       hargaBeli: _angka(_beli),
       hargaJual: _angka(_jual),
       minStrat1: _angka(_min[0]),
@@ -340,7 +343,7 @@ class _BarangPanelState extends State<BarangPanel> {
       var simpan = await _repo.simpan(_dariForm(), baru: _baru);
       if (!mounted) return;
       if (widget.awal == null) {
-        final minta = _angka(_stok);
+        final minta = _qtyAngka();
         if (minta != simpan.stok) {
           try {
             final n = await _repo.setStok(simpan.id, minta);
@@ -398,7 +401,7 @@ class _BarangPanelState extends State<BarangPanel> {
     }
     setState(() => _proses = true);
     try {
-      final n = await _repo.setStok(id, _angka(_stok));
+      final n = await _repo.setStok(id, _qtyAngka());
       if (!mounted) return;
       final baru = _dariForm(stok: n);
       setState(() => _proses = false);
@@ -705,7 +708,20 @@ class _BarangPanelState extends State<BarangPanel> {
                       ),
                     ),
                     const SizedBox(height: 28),
-                    _angkaField(_stok, 'Stok', min: 80, max: 120),
+                    SizedBox(
+                      width: _lebarIsi(_stok.text, 'Stok', min: 80, max: 120),
+                      child: TextField(
+                        controller: _stok,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        inputFormatters: [_qty],
+                        textInputAction: TextInputAction.next,
+                        style: const TextStyle(fontSize: 13),
+                        decoration: _isi('Stok'),
+                        onChanged: (_) => setState(() {}),
+                      ),
+                    ),
                     const SizedBox(height: 8),
                     Align(
                       alignment: Alignment.centerLeft,

@@ -58,8 +58,10 @@ class _SetoranScreenState extends State<SetoranScreen> {
   static const _teksIsi = 14.0;
   static const _hintCek =
       'Actual nota − mutasi − tunai admin − BOP − retur klaim − kasbon. '
-      'Actual = kiriman − batal − pending (sama actual nota HP). '
-      'Retur dari outlet, bukan catatan teks.';
+      'Kiriman = masih dikirim (bukan pending). '
+      'Actual = terkirim (tebus, waktu kunci hari itu). '
+      'Batal = nota dibatalkan pengirim hari itu. '
+      'Pending = ditunda, bukan sisa packed.';
   static const _garisKolom = TableBorder(
     verticalInside: BorderSide(color: Color(0xFF8FB4D9), width: 1),
   );
@@ -73,10 +75,16 @@ class _SetoranScreenState extends State<SetoranScreen> {
   List<Map<String, dynamic>> _gudang = [];
   List<Map<String, dynamic>> _masukCloud = [];
   int _ongkirHari = 0;
+  bool _bukuTerbuka = false;
+  String _bukuTanggal = '';
+  int _bukuGantung = 0;
+  int _bukuPending = 0;
+  bool _ikutiBukuTerbuka = true;
   bool _opnameAda = false;
   String _opnameStatus = '';
   int _opnameSelisihSku = 0;
   int _opnameNilaiSelisih = 0;
+  int _opnameMenunggu = 0;
   List<Map<String, dynamic>> _opnameBeda = [];
   bool _kotor = false;
   bool _mutasiGantiIsi = false;
@@ -102,6 +110,23 @@ class _SetoranScreenState extends State<SetoranScreen> {
   String get _judulHari => _teksHari(_hari);
 
   String get _judulAppBar => 'Setoran ${_teksHari(_hari)}';
+
+  String _isoDariNilai(dynamic v) {
+    if (v is DateTime) return Uang.isoHari(v);
+    final s = v?.toString() ?? '';
+    if (s.length >= 10) return s.substring(0, 10);
+    return s;
+  }
+
+  String get _judulBuku {
+    if (_bukuTanggal.isEmpty) return '';
+    final p = DateTime.tryParse(_bukuTanggal);
+    if (p == null) return _bukuTanggal;
+    return _teksHari(DateTime(p.year, p.month, p.day));
+  }
+
+  bool get _sedangLihatBukuTerbuka =>
+      _bukuTerbuka && _bukuTanggal.isNotEmpty && _iso == _bukuTanggal;
 
   double _tinggiKartuSetoran(int nBaris, double tinggiBaris) =>
       _padKartuTabelAtas +
@@ -305,8 +330,6 @@ class _SetoranScreenState extends State<SetoranScreen> {
     final kasbon = _kasbonKlaimTotal(row);
     final tunaiAdmin = _angka(row['tunai_admin']);
     final mutasi = _angka(row['transfer_mutasi']);
-    row['actual'] =
-        _angka(row['kiriman']) - _angka(row['batal']) - _angka(row['pending']);
     row['tunai_beda'] =
         row['sudah_setor'] == true &&
         tunaiAdmin > 0 &&
@@ -408,8 +431,71 @@ class _SetoranScreenState extends State<SetoranScreen> {
     return ya == true;
   }
 
-  String? _ruteDariBerita(String berita) =>
-      MutasiCsv.ruteDariBerita(berita, _iso);
+  Future<void> _tutupBuku() async {
+    if (_proses || !_sedangLihatBukuTerbuka) return;
+    if (_bukuGantung > 0) {
+      umpan(
+        context,
+        'Masih ada $_bukuGantung nota di truk. Kunci atau tandai pending dulu.',
+        nada: NadaUmpan.kuning,
+      );
+      return;
+    }
+    final ya = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AppDialog(
+        title: const Text('Tutup buku setoran?'),
+        content: Text(
+          _bukuPending > 0
+              ? 'Buku ${_judulBuku.isEmpty ? _bukuTanggal : _judulBuku} ditutup. '
+                  '$_bukuPending nota pending pindah ke buku berikutnya. '
+                  'Nota terkirim dan batal tetap di buku ini.'
+              : 'Buku ${_judulBuku.isEmpty ? _bukuTanggal : _judulBuku} ditutup. '
+                  'Packing berikutnya masuk buku baru.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Tutup'),
+          ),
+        ],
+      ),
+    );
+    if (ya != true || !mounted) return;
+    setState(() => _proses = true);
+    try {
+      final ok = await _sb.rpc(
+        'admin_setoran_buku_tutup',
+        params: {
+          'p_tanggal': _bukuTanggal.isEmpty ? _iso : _bukuTanggal,
+        },
+      );
+      if (ok != true) throw Exception('buku');
+      if (!mounted) return;
+      _ikutiBukuTerbuka = true;
+      await _muatData(buangDraf: true);
+      if (!mounted) return;
+      umpan(context, 'Buku setoran ditutup.', nada: NadaUmpan.hijau);
+    } catch (e) {
+      if (mounted) {
+        umpan(context, pesanGagal(e, 'Gagal menutup buku setoran.'));
+      }
+    } finally {
+      if (mounted) setState(() => _proses = false);
+    }
+  }
+
+  String? _ruteDariBerita(String berita) {
+    final diBuku = MutasiCsv.ruteDariBerita(berita, _iso);
+    if (diBuku != null) return diBuku;
+    final hariIni = Uang.isoHari(DateTime.now());
+    if (hariIni == _iso) return null;
+    return MutasiCsv.ruteDariBerita(berita, hariIni);
+  }
 
   Future<bool> _adaNet() async => true;
 
@@ -420,6 +506,40 @@ class _SetoranScreenState extends State<SetoranScreen> {
     if (!buangDraf && !await _izinBuangDraf()) return;
     if (layarPenuh && mounted) setState(() => _muat = true);
     try {
+      var bukuTerbuka = false;
+      var bukuTanggal = '';
+      var bukuGantung = 0;
+      var bukuPending = 0;
+      try {
+        final rawBuku = await _sb.rpc(
+          'admin_setoran_buku_lihat',
+          params: {'p_tanggal': null},
+        );
+        if (rawBuku is List) {
+          Map<String, dynamic>? pilih;
+          for (final e in rawBuku) {
+            if (e is! Map) continue;
+            final m = Map<String, dynamic>.from(e);
+            if (m['buku_terbuka'] == true) {
+              pilih = m;
+              break;
+            }
+            pilih ??= m;
+          }
+          if (pilih != null) {
+            bukuTerbuka = pilih['buku_terbuka'] == true;
+            bukuTanggal = _isoDariNilai(pilih['tanggal']);
+            bukuGantung = _angka(pilih['jumlah_gantung']);
+            bukuPending = _angka(pilih['jumlah_pending']);
+          }
+        }
+      } catch (_) {}
+      if (_ikutiBukuTerbuka && bukuTerbuka && bukuTanggal.isNotEmpty) {
+        final p = DateTime.tryParse(bukuTanggal);
+        if (p != null) {
+          _hari = DateTime(p.year, p.month, p.day);
+        }
+      }
       final truk = await _sb.rpc(
         'admin_setoran_hari',
         params: {'p_tanggal': _iso},
@@ -485,6 +605,7 @@ class _SetoranScreenState extends State<SetoranScreen> {
       var opnameStatus = '';
       var opnameSku = 0;
       var opnameNilai = 0;
+      var opnameMenunggu = 0;
       var opnameBeda = <Map<String, dynamic>>[];
       try {
         final ringkas = await _ringkasOpname();
@@ -492,6 +613,7 @@ class _SetoranScreenState extends State<SetoranScreen> {
         opnameStatus = ringkas.status;
         opnameSku = ringkas.sku;
         opnameNilai = ringkas.nilai;
+        opnameMenunggu = ringkas.menunggu;
         opnameBeda = ringkas.beda;
       } catch (_) {}
       if (!mounted) return;
@@ -510,10 +632,15 @@ class _SetoranScreenState extends State<SetoranScreen> {
         _gudang = gudang;
         _masukCloud = masuk;
         _ongkirHari = ongkirHari;
+        _bukuTerbuka = bukuTerbuka;
+        _bukuTanggal = bukuTanggal;
+        _bukuGantung = bukuGantung;
+        _bukuPending = bukuPending;
         _opnameAda = opnameAda;
         _opnameStatus = opnameStatus;
         _opnameSelisihSku = opnameSku;
         _opnameNilaiSelisih = opnameNilai;
+        _opnameMenunggu = opnameMenunggu;
         _opnameBeda = opnameBeda;
         _muat = false;
         _resetDraf();
@@ -529,10 +656,15 @@ class _SetoranScreenState extends State<SetoranScreen> {
           _gudang = [];
           _masukCloud = [];
           _ongkirHari = 0;
+          _bukuTerbuka = false;
+          _bukuTanggal = '';
+          _bukuGantung = 0;
+          _bukuPending = 0;
           _opnameAda = false;
           _opnameStatus = '';
           _opnameSelisihSku = 0;
           _opnameNilaiSelisih = 0;
+          _opnameMenunggu = 0;
           _opnameBeda = [];
           _muat = false;
         });
@@ -1384,7 +1516,7 @@ class _SetoranScreenState extends State<SetoranScreen> {
                     Padding(
                       padding: const EdgeInsets.only(top: 4),
                       child: Text(
-                        'Ongkir hari ini (semua supplier): Rp ${Uang.angka(ongkirHariTotal)}'
+                        'Ongkir buku ini (semua supplier): Rp ${Uang.angka(ongkirHariTotal)}'
                         '\nTotal minggu $labelMinggu: Rp ${Uang.angka(ongkirMingguTotal)}',
                         style: gaya.copyWith(color: Colors.grey.shade700),
                       ),
@@ -1525,7 +1657,7 @@ class _SetoranScreenState extends State<SetoranScreen> {
                     const SizedBox(height: 8),
                     if (baris.isEmpty)
                       Text(
-                        'Belum ada barang masuk tanggal ini.',
+                        'Belum ada barang masuk di buku ini.',
                         style: gaya.copyWith(color: Colors.grey.shade600),
                       )
                     else ...[
@@ -1594,7 +1726,7 @@ class _SetoranScreenState extends State<SetoranScreen> {
                                         if (b.baru) 'baru · id otomatis',
                                         if (!b.baru) b.kode,
                                         if (b.qtySudah > 0)
-                                          'hari ini ${Uang.angka(b.qtySudah)}',
+                                          'di buku ${Uang.angka(b.qtySudah)}',
                                         if (b.nilai > 0)
                                           'Rp ${Uang.angka(b.nilai)}',
                                       ].join(' · '),
@@ -1637,7 +1769,7 @@ class _SetoranScreenState extends State<SetoranScreen> {
                                 width: lebarHapus,
                                 child: IconButton(
                                   tooltip: b.qtySudah > 0
-                                      ? 'Sudah tersimpan hari ini. Kosongkan +Qty jika batal tambah.'
+                                      ? 'Sudah tersimpan di buku ini. Kosongkan +Qty jika batal tambah.'
                                       : 'Hapus',
                                   visualDensity: VisualDensity.compact,
                                   padding: EdgeInsets.zero,
@@ -1703,12 +1835,20 @@ class _SetoranScreenState extends State<SetoranScreen> {
     }
   }
 
+  num _pecahan(dynamic v) {
+    if (v is num) return v;
+    return num.tryParse(v?.toString().replaceAll(',', '.') ?? '') ?? 0;
+  }
+
+  bool _ya(dynamic v) => v == true || v == 'true' || v == 't';
+
   Future<
     ({
       bool ada,
       String status,
       int sku,
       int nilai,
+      int menunggu,
       List<Map<String, dynamic>> beda,
     })
   >
@@ -1723,23 +1863,21 @@ class _SetoranScreenState extends State<SetoranScreen> {
         status: '',
         sku: 0,
         nilai: 0,
+        menunggu: 0,
         beda: <Map<String, dynamic>>[],
       );
     }
     final semua = raw.map((e) => Map<String, dynamic>.from(e as Map)).toList();
     final status = semua.first['status_opname']?.toString() ?? 'draft';
-    num qty(dynamic v) {
-      if (v is num) return v;
-      return num.tryParse(v?.toString().replaceAll(',', '.') ?? '') ?? 0;
-    }
-
-    final beda = semua.where((r) => qty(r['selisih_qty']) != 0).toList();
+    final beda = semua.where((r) => _pecahan(r['selisih_qty']) != 0).toList();
     final nilai = beda.fold<int>(0, (a, r) => a + _angka(r['nilai_selisih']));
+    final menunggu = beda.where((r) => _ya(r['perlu_konfirmasi'])).length;
     return (
       ada: true,
       status: status,
       sku: beda.length,
       nilai: nilai,
+      menunggu: menunggu,
       beda: beda,
     );
   }
@@ -1756,6 +1894,7 @@ class _SetoranScreenState extends State<SetoranScreen> {
         _opnameStatus = ringkas.status;
         _opnameSelisihSku = ringkas.sku;
         _opnameNilaiSelisih = ringkas.nilai;
+        _opnameMenunggu = ringkas.menunggu;
         _opnameBeda = ringkas.beda;
       });
       if (!ringkas.ada) {
@@ -1777,61 +1916,182 @@ class _SetoranScreenState extends State<SetoranScreen> {
 
   Future<void> _dialogSelisihOpname() async {
     if (_opnameBeda.isEmpty) return;
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AppDialog(
-        title: Text('Selisih opname (${_opnameBeda.length})'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            for (final r in _opnameBeda)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '${r['nama_barang'] ?? r['kode_barang']}',
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    Text(
-                      '${r['kode_barang']}  ·  sistem ${r['sisa'] ?? 0}  ·  '
-                      'fisik ${r['stok_fisik'] ?? 0}  ·  '
-                      'selisih ${r['selisih_qty'] ?? 0}  ·  '
-                      'Rp ${Uang.angka(_angka(r['nilai_selisih']))}',
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: Colors.grey.shade800,
+    final kunci = _opnameStatus == 'kunci';
+    final ctrl = <String, TextEditingController>{};
+    for (final r in _opnameBeda) {
+      final kode = r['kode_barang']?.toString() ?? '';
+      if (kode.isEmpty) continue;
+      final awal = r['qty_dikonfirmasi'] != null
+          ? _pecahan(r['qty_dikonfirmasi'])
+          : _pecahan(r['stok_fisik']);
+      ctrl[kode] = TextEditingController(text: Uang.qty(awal));
+    }
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) {
+          return StatefulBuilder(
+            builder: (_, setLocal) {
+              Future<void> simpan() async {
+                if (!kunci) return;
+                final kirim = [
+                  for (final e in ctrl.entries)
+                    {'kode_barang': e.key, 'qty': Uang.qtyTeks(e.value.text)},
+                ];
+                try {
+                  await _sb.rpc(
+                    'admin_opname_konfirmasi',
+                    params: {'p_tanggal': _iso, 'p_baris': kirim},
+                  );
+                  if (ctx.mounted) Navigator.pop(ctx);
+                  if (!mounted) return;
+                  final ringkas = await _ringkasOpname();
+                  if (!mounted) return;
+                  setState(() {
+                    _opnameAda = ringkas.ada;
+                    _opnameStatus = ringkas.status;
+                    _opnameSelisihSku = ringkas.sku;
+                    _opnameNilaiSelisih = ringkas.nilai;
+                    _opnameMenunggu = ringkas.menunggu;
+                    _opnameBeda = ringkas.beda;
+                  });
+                  umpan(
+                    context,
+                    'Qty opname dikonfirmasi.',
+                    nada: NadaUmpan.hijau,
+                  );
+                } catch (e) {
+                  if (!mounted) return;
+                  umpan(context, pesanGagal(e, 'Gagal konfirmasi opname.'));
+                }
+              }
+
+              return AppDialog(
+                title: Text('Selisih opname (${_opnameBeda.length})'),
+                content: SizedBox(
+                  width: 520,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        kunci
+                            ? 'Fisik gudang tidak diubah. Isi qty yang sah ke stok.'
+                            : 'Tunggu gudang simpan opname, lalu konfirmasi qty di sini.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade600,
+                        ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 8),
+                      for (final r in _opnameBeda)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      '${r['nama_barang'] ?? r['kode_barang']}',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    Text(
+                                      '${r['kode_barang']}  ·  sistem ${Uang.qty(_pecahan(r['sisa']))}  ·  '
+                                      'fisik ${Uang.qty(_pecahan(r['stok_fisik']))}  ·  '
+                                      'selisih ${Uang.qty(_pecahan(r['selisih_qty']))}  ·  '
+                                      'Rp ${Uang.angka(_angka(r['nilai_selisih']))}',
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color: Colors.grey.shade800,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              SizedBox(
+                                width: 72,
+                                child: TextField(
+                                  controller:
+                                      ctrl[r['kode_barang']?.toString() ?? ''],
+                                  enabled: kunci,
+                                  keyboardType:
+                                      const TextInputType.numberWithOptions(
+                                    decimal: true,
+                                  ),
+                                  style: const TextStyle(fontSize: 12),
+                                  textAlign: TextAlign.center,
+                                  decoration: const InputDecoration(
+                                    isDense: true,
+                                    hintText: 'Qty',
+                                    hintStyle: TextStyle(fontSize: 11),
+                                    contentPadding: EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 6,
+                                    ),
+                                  ),
+                                  onChanged: (_) => setLocal(() {}),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
-              ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Tutup'),
-          ),
-        ],
-      ),
-    );
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('Tutup'),
+                  ),
+                  if (kunci)
+                    FilledButton(
+                      onPressed: simpan,
+                      child: const Text('Konfirmasi'),
+                    ),
+                ],
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      for (final c in ctrl.values) {
+        c.dispose();
+      }
+    }
   }
 
   Future<void> _pilihHari() async {
     if (!await _izinBuangDraf()) return;
     if (!mounted) return;
+    var akhir = DateTime.now();
+    akhir = DateTime(akhir.year, akhir.month, akhir.day);
+    if (_bukuTerbuka && _bukuTanggal.isNotEmpty) {
+      final b = DateTime.tryParse(_bukuTanggal);
+      if (b != null) {
+        akhir = DateTime(b.year, b.month, b.day);
+      }
+    }
+    var awal = DateTime(_hari.year, _hari.month, _hari.day);
+    if (awal.isAfter(akhir)) awal = akhir;
     final pilih = await showDatePicker(
       context: context,
-      initialDate: _hari,
+      initialDate: awal,
       firstDate: DateTime(2025),
-      lastDate: DateTime.now().add(const Duration(days: 1)),
+      lastDate: akhir,
+      helpText: 'Buku lama',
     );
     if (pilih == null) return;
     if (!mounted) return;
     _hari = DateTime(pilih.year, pilih.month, pilih.day);
+    _ikutiBukuTerbuka =
+        _bukuTerbuka && _bukuTanggal.isNotEmpty && _iso == _bukuTanggal;
     await _muatData(layarPenuh: true, buangDraf: true);
   }
 
@@ -2446,9 +2706,7 @@ class _SetoranScreenState extends State<SetoranScreen> {
       nota = nota.where((n) => n['pending'] == true).toList();
     } else {
       nota = nota
-          .where(
-            (n) => n['status']?.toString() == 'batal' || _angka(n['batal']) > 0,
-          )
+          .where((n) => n['status']?.toString() == 'batal')
           .toList();
     }
     if (!mounted) return;
@@ -2602,8 +2860,8 @@ class _SetoranScreenState extends State<SetoranScreen> {
             content: nota.isEmpty
                 ? Text(
                     pending
-                        ? 'Tidak ada nota pending untuk tanggal ini.'
-                        : 'Tidak ada nota batal untuk tanggal ini.',
+                        ? 'Tidak ada nota pending di buku ini.'
+                        : 'Tidak ada nota batal di buku ini.',
                   )
                 : tabelNota(setLocal),
             actions: [
@@ -2881,7 +3139,7 @@ class _SetoranScreenState extends State<SetoranScreen> {
                 title: Text('Toko dimuat $rute'),
                 content: baris.isEmpty
                     ? const Text(
-                        'Tidak ada toko yang notanya dimuat hari ini.',
+                        'Tidak ada toko yang notanya di buku ini.',
                       )
                     : SingleChildScrollView(
                         scrollDirection: Axis.horizontal,
@@ -3551,24 +3809,6 @@ class _SetoranScreenState extends State<SetoranScreen> {
   Future<void> _dialogRetur(Map<String, dynamic> row) async {
     if (!await _adaNet()) return;
     final rute = row['rute_pengirim']?.toString() ?? '';
-    var nominal = _angka(row['retur']);
-    try {
-      final raw = await _sb.rpc(
-        'admin_retur_lihat',
-        params: {'p_tanggal': _iso},
-      );
-      if (raw is List) {
-        for (final e in raw) {
-          if (e is! Map) continue;
-          final m = Map<String, dynamic>.from(e);
-          if (m['rute_pengirim']?.toString() != rute) continue;
-          nominal = _angka(m['jumlah_usul']);
-          if (nominal <= 0) nominal = _angka(m['nilai_kunci']);
-          break;
-        }
-      }
-    } catch (_) {}
-
     final baris = <_BarisCocokRetur>[];
     try {
       final raw = await _sb.rpc(
@@ -3642,7 +3882,10 @@ class _SetoranScreenState extends State<SetoranScreen> {
           builder: (context, setLocal) {
             int totalQty() =>
                 baris.fold<int>(0, (a, b) => a + (b.cek ? b.qtyFisik : 0));
-            final nilaiKlaim = baris.fold<int>(0, (a, b) => a + b.nilai);
+            final nilaiKlaim = dariToko.fold<int>(
+              0,
+              (a, b) => a + _angka(b['nilai']),
+            );
 
             Future<void> simpan() async {
               final kirim = [
@@ -3668,7 +3911,7 @@ class _SetoranScreenState extends State<SetoranScreen> {
             }
 
             return AppDialog(
-              title: Text('Retur $rute'),
+              title: Text('Retur $rute · $_judulHari'),
               content: SizedBox(
                 width: 460,
                 child: SingleChildScrollView(
@@ -3677,10 +3920,10 @@ class _SetoranScreenState extends State<SetoranScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       _barisNilai('Qty fisik', totalQty()),
-                      _barisNilai('Nominal klaim', nilaiKlaim > 0 ? nilaiKlaim : nominal),
+                      _barisNilai('Nominal klaim', nilaiKlaim),
                       const SizedBox(height: 8),
                       Text(
-                        'Klaim dari outlet pengirim. Kolom Actual di setoran tetap kiriman − batal − pending. Retur menutup uang, bukan mengurangi Actual.',
+                        'Isi buku ini: klaim outlet pengirim, lalu qty yang kembali ke gudang.',
                         style: TextStyle(
                           fontSize: 12,
                           color: Colors.grey.shade600,
@@ -3717,7 +3960,7 @@ class _SetoranScreenState extends State<SetoranScreen> {
                       const SizedBox(height: 8),
                       if (baris.isEmpty)
                         Text(
-                          'Pengirim belum mencatat retur di outlet.',
+                          'Tidak ada klaim retur di buku ini.',
                           style: TextStyle(
                             fontSize: 12,
                             color: Colors.grey.shade600,
@@ -3800,24 +4043,6 @@ class _SetoranScreenState extends State<SetoranScreen> {
 
   Future<void> _dialogReturJumlah() async {
     if (!await _adaNet()) return;
-    var nominal = 0;
-    try {
-      final raw = await _sb.rpc(
-        'admin_retur_lihat',
-        params: {'p_tanggal': _iso},
-      );
-      if (raw is List) {
-        for (final e in raw) {
-          if (e is! Map) continue;
-          final m = Map<String, dynamic>.from(e);
-          final rute = m['rute_pengirim']?.toString() ?? '';
-          if (!_rute.contains(rute)) continue;
-          var n = _angka(m['jumlah_usul']);
-          if (n <= 0) n = _angka(m['nilai_kunci']);
-          nominal += n;
-        }
-      }
-    } catch (_) {}
     List<Map<String, dynamic>> items = [];
     try {
       items = await _gabungItemHari(
@@ -3841,12 +4066,12 @@ class _SetoranScreenState extends State<SetoranScreen> {
     }
     if (!mounted) return;
     final totalQty = items.fold<int>(0, (a, it) => a + _angka(it['qty']));
-    final totalNilai = items.fold<int>(0, (a, it) => a + _angka(it['nilai']));
+    final totalNilai = dariToko.fold<int>(0, (a, b) => a + _angka(b['nilai']));
     await showDialog<void>(
       context: context,
       builder: (ctx) {
         return AppDialog(
-          title: const Text('Retur semua rute'),
+          title: Text('Retur semua rute · $_judulHari'),
           content: SizedBox(
             width: 460,
             child: SingleChildScrollView(
@@ -3855,10 +4080,10 @@ class _SetoranScreenState extends State<SetoranScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _barisNilai('Qty klaim', totalQty),
-                  _barisNilai('Nominal', totalNilai > 0 ? totalNilai : nominal),
+                  _barisNilai('Nominal klaim', totalNilai),
                   const SizedBox(height: 8),
                   Text(
-                    'Klaim outlet pengirim. Actual admin = kiriman − batal − pending. Retur menutup uang.',
+                    'Isi buku ini: klaim outlet pengirim, per rute.',
                     style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
                   ),
                   if (dariToko.isNotEmpty) ...[
@@ -3873,7 +4098,7 @@ class _SetoranScreenState extends State<SetoranScreen> {
                   const SizedBox(height: 8),
                   if (items.isEmpty)
                     Text(
-                      'Belum ada barang retur untuk tanggal ini.',
+                      'Belum ada barang retur di buku ini.',
                       style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
                     )
                   else
@@ -4160,7 +4385,7 @@ class _SetoranScreenState extends State<SetoranScreen> {
     }
     if (!mounted) return;
     if (items.isEmpty) {
-      umpan(context, 'Tidak ada item pending untuk tanggal ini.', nada: NadaUmpan.kuning);
+      umpan(context, 'Tidak ada item pending di buku ini.', nada: NadaUmpan.kuning);
       return;
     }
     final totalQty = items.fold<int>(0, (a, it) => a + _angka(it['qty']));
@@ -4193,7 +4418,7 @@ class _SetoranScreenState extends State<SetoranScreen> {
     }
     if (!mounted) return;
     if (items.isEmpty) {
-      umpan(context, 'Tidak ada item batal untuk tanggal ini.', nada: NadaUmpan.kuning);
+      umpan(context, 'Tidak ada item batal di buku ini.', nada: NadaUmpan.kuning);
       return;
     }
     try {
@@ -4541,7 +4766,38 @@ class _SetoranScreenState extends State<SetoranScreen> {
       beres: 'Kasbon sudah dicek.',
     );
 
+    Color bukuWarna;
+    String bukuHint;
+    if (_sedangLihatBukuTerbuka) {
+      if (_bukuGantung > 0) {
+        bukuWarna = Colors.orange.shade800;
+        bukuHint =
+            'Buku ${_judulBuku.isEmpty ? _bukuTanggal : _judulBuku} terbuka. '
+            'Masih $_bukuGantung nota di truk. Kunci atau pending dulu sebelum tutup.';
+      } else {
+        bukuWarna = Colors.green.shade700;
+        bukuHint =
+            'Buku ${_judulBuku.isEmpty ? _bukuTanggal : _judulBuku} siap ditutup.'
+            '${_bukuPending > 0 ? ' $_bukuPending pending akan pindah ke buku berikutnya.' : ''}';
+      }
+    } else if (_bukuTerbuka) {
+      bukuWarna = Colors.grey.shade600;
+      bukuHint =
+          'Ini buku lama. Data kartu ini tidak berubah. '
+          'Buku terbuka: ${_judulBuku.isEmpty ? _bukuTanggal : _judulBuku}.';
+    } else {
+      bukuWarna = Colors.grey.shade600;
+      bukuHint = _bukuTanggal.isEmpty
+          ? 'Tidak ada buku setoran terbuka. Packing gudang akan membuka buku baru.'
+          : 'Kartu ini sudah ditutup.';
+    }
+
     return [
+      (
+        nama: 'Buku',
+        warna: bukuWarna,
+        hint: bukuHint,
+      ),
       (nama: 'Mutasi', warna: mutasiWarna, hint: mutasiHint),
       (nama: 'Tunai', warna: tunaiWarna, hint: tunaiHint),
       (nama: 'Batal', warna: batal.warna, hint: batal.hint),
@@ -5558,7 +5814,7 @@ class _SetoranScreenState extends State<SetoranScreen> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: _tombolBiru(
-                      label: 'Hapus mutasi tanggal ini',
+                      label: 'Hapus mutasi buku ini',
                       onPressed: _proses || _mutasi.isEmpty
                           ? null
                           : _hapusMutasi,
@@ -5580,18 +5836,23 @@ class _SetoranScreenState extends State<SetoranScreen> {
     final Color warna;
     if (!_opnameAda) {
       judulStatus = 'Belum ada input';
-      detail = 'Gudang belum mengirim opname untuk tanggal ini.';
+      detail = 'Gudang belum mengirim opname untuk buku ini.';
       warna = Colors.grey.shade700;
     } else if (_opnameStatus == 'kunci') {
       if (_opnameSelisihSku == 0) {
         judulStatus = 'Dikunci · cocok';
         detail = 'Tidak ada selisih stok.';
         warna = Colors.green.shade700;
+      } else if (_opnameMenunggu > 0) {
+        judulStatus = 'Perlu konfirmasi admin';
+        detail =
+            '$_opnameMenunggu dari $_opnameSelisihSku SKU  ·  Rp ${Uang.angka(_opnameNilaiSelisih)}';
+        warna = Colors.orange.shade800;
       } else {
-        judulStatus = 'Dikunci · selisih';
+        judulStatus = 'Selisih dikonfirmasi';
         detail =
             '$_opnameSelisihSku SKU  ·  Rp ${Uang.angka(_opnameNilaiSelisih)}';
-        warna = Colors.orange.shade800;
+        warna = Colors.green.shade700;
       }
     } else if (_opnameSelisihSku == 0) {
       judulStatus = 'Draft · cocok';
@@ -5613,14 +5874,14 @@ class _SetoranScreenState extends State<SetoranScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _tombolSetengahKiri(
-                label: 'Lihat opname',
+                label: _opnameMenunggu > 0 ? 'Konfirmasi opname' : 'Lihat opname',
                 onPressed: _proses ? null : _cekOpname,
                 ukuranFont: _teksIsi,
               ),
               const SizedBox(height: 4),
               Text(
-                'Opname gudang (lihat saja)',
-                maxLines: 1,
+                'Fisik gudang; qty sah dikunci admin jika ada selisih',
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontSize: 11,
@@ -5866,10 +6127,19 @@ class _SetoranScreenState extends State<SetoranScreen> {
         title: Row(
           children: [
             IconButton(
-              tooltip: 'Pilih tanggal',
+              tooltip: 'Buku lama',
               onPressed: _pilihHari,
               icon: const Icon(Icons.calendar_month_outlined),
             ),
+            if (!_ikutiBukuTerbuka && _bukuTerbuka)
+              IconButton(
+                tooltip: 'Buku terbuka',
+                onPressed: () {
+                  _ikutiBukuTerbuka = true;
+                  _muatData(layarPenuh: true);
+                },
+                icon: const Icon(Icons.menu_book_outlined),
+              ),
             Expanded(
               child: Text(_judulAppBar, overflow: TextOverflow.ellipsis),
             ),
@@ -5899,6 +6169,14 @@ class _SetoranScreenState extends State<SetoranScreen> {
               child: const Text('Simpan'),
             ),
           ),
+          if (_sedangLihatBukuTerbuka)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+              child: OutlinedButton(
+                onPressed: _muat || _proses ? null : _tutupBuku,
+                child: const Text('Tutup buku'),
+              ),
+            ),
           IconButton(
             tooltip: 'Unduh',
             onPressed: _muat || _proses ? null : _unduhHalaman,

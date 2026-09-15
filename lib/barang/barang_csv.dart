@@ -1,3 +1,4 @@
+import '../uang.dart';
 import 'barang.dart';
 
 class BarisCsv {
@@ -77,7 +78,7 @@ class BarangCsv {
 
   static String templateStok() {
     return _tulis(kepalaStok, [
-      ['BR001', 'Nama contoh /box/10lbr', '0'],
+      ['BR001', 'Nama contoh /box/10lbr', '1,5'],
     ]);
   }
 
@@ -110,7 +111,7 @@ class BarangCsv {
 
   static String dariStok(List<Barang> daftar) {
     return _tulis(kepalaStok, [
-      for (final b in daftar) [b.id, b.nama, '${b.stok}'],
+      for (final b in daftar) [b.id, b.nama, Uang.qty(b.stok)],
     ]);
   }
 
@@ -170,7 +171,7 @@ class BarangCsv {
       if (id.isEmpty) continue;
       keluar.add({
         'id_barang': id,
-        'stok': _angka(row['stok'] ?? ''),
+        'stok': Uang.qtyTeks(row['stok'] ?? ''),
       });
     }
     return keluar;

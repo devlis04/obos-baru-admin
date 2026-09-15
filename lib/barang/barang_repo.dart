@@ -131,17 +131,21 @@ class BarangRepo {
     return list.first;
   }
 
-  Future<int> setStok(String id, int stok) async {
+  Future<num> setStok(String id, num stok) async {
     final hasil = await _sb.rpc(
       'admin_barang_stok',
       params: {'p_id_barang': id, 'p_stok': stok},
     ).timeout(_tunggu);
+    num baca(dynamic n) {
+      if (n is num) return n;
+      return num.tryParse(n?.toString() ?? '') ?? stok;
+    }
+
     if (hasil is List && hasil.isNotEmpty && hasil.first is Map) {
-      final n = (hasil.first as Map)['stok'];
-      return (n as num?)?.toInt() ?? stok;
+      return baca((hasil.first as Map)['stok']);
     }
     if (hasil is Map) {
-      return (hasil['stok'] as num?)?.toInt() ?? stok;
+      return baca(hasil['stok']);
     }
     return stok;
   }
